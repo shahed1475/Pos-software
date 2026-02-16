@@ -3,58 +3,166 @@ generator client {
 }
 
 datasource db {
-  provider = "postgresql"
-  url      = env("DATABASE_URL")
+  provider = "sqlite"
+  url      = "file:./dev.db"
 }
 
-model Restaurant {
-  id        String   @id @default(cuid())
-  name      String
-  address   String?
-  phone     String?
-  email     String?
-  logo      String?
-  taxRate   Float    @default(0)
-  currency  String   @default("USD")
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+// ==================== Multi-Tenancy ====================
+
+model Tenant {
+  id              String    @id @default(cuid())
+  name            String
+  slug            String    @unique
+  email           String?
+  phone           String?
+  logo            String?
+  plan            String    @default("basic")
+  maxBranches     Int       @default(3)
+  subscriptionEnd DateTime?
+  active          Boolean   @default(true)
+  branches        Branch[]
+  staff           Staff[]
+  categories      Category[]
+  menuItems       MenuItem[]
+  tables          Table[]
+  orders          Order[]
+  ingredients     Ingredient[]
+  expenses        Expense[]
+  auditLogs       AuditLog[]
+  inventoryLogs   InventoryLog[]
+  wastes          Waste[]
+  vendors         Vendor[]
+  cartSessions    CartSession[]
+  commissionRules CommissionRule[]
+  rentAgreements  RentAgreement[]
+  settlementLedger SettlementLedger[]
+  vendorPayouts   VendorPayout[]
+  subscriptions   Subscription[]
+  invoices        Invoice[]
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
 }
 
-model Staff {
+model Branch {
   id           String   @id @default(cuid())
+  tenantId     String
+  tenant       Tenant   @relation(fields: [tenantId], references: [id])
   name         String
-  pin          String
-  role         Role     @default(CASHIER)
+  address      String?
   phone        String?
   email        String?
-  profileImage String?
+  taxRate      Float    @default(0)
+  currency     String   @default("USD")
   active       Boolean  @default(true)
+  tables       Table[]
   orders       Order[]
+  purchases    Purchase[]
   shifts       Shift[]
+  staff        Staff[]  @relation("StaffBranch")
+  expenses     Expense[]
+  wastes       Waste[]
+  vendors      Vendor[]
+  cartSessions CartSession[]
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 }
 
-enum Role {
-  ADMIN
-  MANAGER
-  CASHIER
-  WAITER
-  KITCHEN
+// ==================== Vendors (Multi-Vendor Marketplace) ====================
+
+model Vendor {
+  id               String             @id @default(cuid())
+  tenantId         String
+  tenant           Tenant             @relation(fields: [tenantId], references: [id])
+  branchId         String?
+  branch           Branch?            @relation(fields: [branchId], references: [id])
+  name             String
+  slug             String
+  description      String?
+  logo             String?
+  contactName      String?
+  contactPhone     String?
+  contactEmail     String?
+  commissionRate   Float              @default(0)
+  active           Boolean            @default(true)
+  kycStatus        String             @default("PENDING") // PENDING, SUBMITTED, APPROVED, REJECTED
+  kycFields        String?            // JSON
+  vendorStaff      VendorStaff[]
+  menuItems        MenuItem[]
+  categories       Category[]
+  orders           Order[]
+  orderItems       OrderItem[]
+  cartItems        CartItem[]
+  ingredients      Ingredient[]
+  commissionRules  CommissionRule[]
+  rentAgreements   RentAgreement[]
+  settlementLedger SettlementLedger[]
+  vendorPayouts    VendorPayout[]
+  capacityRules    VendorCapacityRule[]
+  throttleLogs     OrderThrottleLog[]
+  createdAt        DateTime           @default(now())
+  updatedAt        DateTime           @updatedAt
+
+  @@unique([tenantId, slug])
+}
+
+model VendorStaff {
+  id        String   @id @default(cuid())
+  vendorId  String
+  vendor    Vendor   @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+  staffId   String
+  staff     Staff    @relation(fields: [staffId], references: [id])
+  role      String   @default("VENDOR_STAFF") // VENDOR_ADMIN, VENDOR_MANAGER, VENDOR_STAFF
+  createdAt DateTime @default(now())
+
+  @@unique([vendorId, staffId])
+}
+
+// ==================== Staff & Auth ====================
+
+model Staff {
+  id            String        @id @default(cuid())
+  tenantId      String?
+  tenant        Tenant?       @relation(fields: [tenantId], references: [id])
+  branchId      String?
+  branch        Branch?       @relation("StaffBranch", fields: [branchId], references: [id])
+  name          String
+  pin           String
+  role          String        @default("CASHIER")
+  phone         String?
+  email         String?
+  profileImage  String?
+  active        Boolean       @default(true)
+  orders        Order[]
+  shifts        Shift[]
+  auditLogs     AuditLog[]
+  inventoryLogs InventoryLog[]
+  wastes        Waste[]
+  expenses      Expense[]
+  vendorStaff   VendorStaff[]
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
 }
 
 model Shift {
   id        String    @id @default(cuid())
   staffId   String
   staff     Staff     @relation(fields: [staffId], references: [id])
+  branchId  String?
+  branch    Branch?   @relation(fields: [branchId], references: [id])
   startTime DateTime  @default(now())
   endTime   DateTime?
   cashStart Float?
   cashEnd   Float?
 }
 
+// ==================== Menu ====================
+
 model Category {
   id        String     @id @default(cuid())
+  tenantId  String?
+  tenant    Tenant?    @relation(fields: [tenantId], references: [id])
+  vendorId  String?
+  vendor    Vendor?    @relation(fields: [vendorId], references: [id])
   name      String
   sortOrder Int        @default(0)
   active    Boolean    @default(true)
@@ -64,9 +172,14 @@ model Category {
 
 model MenuItem {
   id          String           @id @default(cuid())
+  tenantId    String?
+  tenant      Tenant?          @relation(fields: [tenantId], references: [id])
+  vendorId    String?
+  vendor      Vendor?          @relation(fields: [vendorId], references: [id])
   name        String
   description String?
   price       Float
+  costPrice   Float            @default(0)
   image       String?
   categoryId  String
   category    Category         @relation(fields: [categoryId], references: [id])
@@ -74,6 +187,7 @@ model MenuItem {
   variants    MenuVariant[]
   ingredients ItemIngredient[]
   orderItems  OrderItem[]
+  cartItems   CartItem[]
   createdAt   DateTime         @default(now())
   updatedAt   DateTime         @updatedAt
 }
@@ -86,116 +200,198 @@ model MenuVariant {
   menuItem   MenuItem @relation(fields: [menuItemId], references: [id], onDelete: Cascade)
 }
 
+// ==================== Tables ====================
+
 model Table {
-  id       String      @id @default(cuid())
-  number   Int         @unique
-  capacity Int         @default(4)
-  status   TableStatus @default(AVAILABLE)
-  posX     Int         @default(0)
-  posY     Int         @default(0)
-  orders   Order[]
+  id           String        @id @default(cuid())
+  tenantId     String?
+  tenant       Tenant?       @relation(fields: [tenantId], references: [id])
+  branchId     String?
+  branch       Branch?       @relation(fields: [branchId], references: [id])
+  number       Int
+  capacity     Int           @default(4)
+  status       String        @default("AVAILABLE")
+  posX         Int           @default(0)
+  posY         Int           @default(0)
+  orders       Order[]
+  cartSessions CartSession[]
+
+  @@unique([branchId, number])
 }
 
-enum TableStatus {
-  AVAILABLE
-  OCCUPIED
-  RESERVED
-  MAINTENANCE
+// ==================== Cart (Multi-Vendor Unified Cart) ====================
+
+model CartSession {
+  id         String     @id @default(cuid())
+  tenantId   String
+  tenant     Tenant     @relation(fields: [tenantId], references: [id])
+  branchId   String?
+  branch     Branch?    @relation(fields: [branchId], references: [id])
+  tableId    String?
+  table      Table?     @relation(fields: [tableId], references: [id])
+  guestToken String?
+  status     String     @default("OPEN") // OPEN, CLOSED
+  items      CartItem[]
+  createdAt  DateTime   @default(now())
+  updatedAt  DateTime   @updatedAt
 }
+
+model CartItem {
+  id            String      @id @default(cuid())
+  cartSessionId String
+  cartSession   CartSession @relation(fields: [cartSessionId], references: [id], onDelete: Cascade)
+  vendorId      String?
+  vendor        Vendor?     @relation(fields: [vendorId], references: [id])
+  menuItemId    String
+  menuItem      MenuItem    @relation(fields: [menuItemId], references: [id])
+  quantity      Int         @default(1)
+  unitPrice     Float
+  variant       String?
+  notes         String?
+  createdAt     DateTime    @default(now())
+}
+
+// ==================== Orders ====================
 
 model Order {
-  id            String        @id @default(cuid())
-  orderNumber   Int           @default(autoincrement())
-  type          OrderType
-  status        OrderStatus   @default(NEW)
-  tableId       String?
-  table         Table?        @relation(fields: [tableId], references: [id])
-  staffId       String
-  staff         Staff         @relation(fields: [staffId], references: [id])
-  customerName  String?
-  customerPhone String?
-  customerAddr  String?
-  items         OrderItem[]
-  subtotal      Float         @default(0)
-  taxAmount     Float         @default(0)
-  discount      Float         @default(0)
-  discountType  DiscountType?
-  total         Float         @default(0)
-  payments      Payment[]
-  notes         String?
-  createdAt     DateTime      @default(now())
-  updatedAt     DateTime      @updatedAt
-  completedAt   DateTime?
-}
-
-enum OrderType {
-  DINE_IN
-  TAKEAWAY
-  DELIVERY
-}
-
-enum OrderStatus {
-  NEW
-  PREPARING
-  READY
-  SERVED
-  COMPLETED
-  CANCELLED
-}
-
-enum DiscountType {
-  PERCENTAGE
-  FLAT
+  id               String             @id @default(cuid())
+  tenantId         String?
+  tenant           Tenant?            @relation(fields: [tenantId], references: [id])
+  branchId         String?
+  branch           Branch?            @relation(fields: [branchId], references: [id])
+  vendorId         String?
+  vendor           Vendor?            @relation(fields: [vendorId], references: [id])
+  orderNumber      Int                @default(0)
+  type             String
+  status           String             @default("NEW")
+  tableId          String?
+  table            Table?             @relation(fields: [tableId], references: [id])
+  staffId          String
+  staff            Staff              @relation(fields: [staffId], references: [id])
+  customerName     String?
+  customerPhone    String?
+  customerAddr     String?
+  items            OrderItem[]
+  subtotal         Float              @default(0)
+  taxAmount        Float              @default(0)
+  discount         Float              @default(0)
+  discountType     String?
+  serviceCharge    Float              @default(0)
+  total            Float              @default(0)
+  payments         Payment[]
+  notes            String?
+  pickupCode       String?
+  settlementLedger SettlementLedger[]
+  createdAt        DateTime           @default(now())
+  updatedAt        DateTime           @updatedAt
+  completedAt      DateTime?
 }
 
 model OrderItem {
-  id         String     @id @default(cuid())
+  id         String   @id @default(cuid())
   orderId    String
-  order      Order      @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  order      Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  vendorId   String?
+  vendor     Vendor?  @relation(fields: [vendorId], references: [id])
   menuItemId String
-  menuItem   MenuItem   @relation(fields: [menuItemId], references: [id])
-  quantity   Int        @default(1)
+  menuItem   MenuItem @relation(fields: [menuItemId], references: [id])
+  quantity   Int      @default(1)
   unitPrice  Float
   variant    String?
   notes      String?
-  status     ItemStatus @default(PENDING)
-}
-
-enum ItemStatus {
-  PENDING
-  PREPARING
-  READY
-  SERVED
-  CANCELLED
+  status     String   @default("PENDING")
+  station    String?  // kitchen, bar, dessert, etc.
 }
 
 model Payment {
-  id        String        @id @default(cuid())
+  id        String   @id @default(cuid())
   orderId   String
-  order     Order         @relation(fields: [orderId], references: [id])
-  method    PaymentMethod
+  order     Order    @relation(fields: [orderId], references: [id])
+  method    String
   amount    Float
-  createdAt DateTime      @default(now())
+  createdAt DateTime @default(now())
 }
 
-enum PaymentMethod {
-  CASH
-  CARD
-  MOBILE
-  OTHER
+// ==================== Settlement & Fees ====================
+
+model CommissionRule {
+  id        String   @id @default(cuid())
+  tenantId  String
+  tenant    Tenant   @relation(fields: [tenantId], references: [id])
+  vendorId  String?
+  vendor    Vendor?  @relation(fields: [vendorId], references: [id])
+  type      String   @default("PERCENTAGE") // PERCENTAGE, FLAT, TIERED
+  value     Float    @default(0)
+  minOrder  Float?
+  channel   String?  // DINE_IN, TAKEAWAY, DELIVERY, QR, null = all
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 }
+
+model RentAgreement {
+  id              String   @id @default(cuid())
+  tenantId        String
+  tenant          Tenant   @relation(fields: [tenantId], references: [id])
+  vendorId        String
+  vendor          Vendor   @relation(fields: [vendorId], references: [id])
+  type            String   @default("FIXED") // FIXED, REVENUE_SHARE, HYBRID
+  fixedAmount     Float?
+  sharePercentage Float?
+  billingCycle    String   @default("MONTHLY") // WEEKLY, MONTHLY
+  active          Boolean  @default(true)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+}
+
+model SettlementLedger {
+  id          String   @id @default(cuid())
+  tenantId    String
+  tenant      Tenant   @relation(fields: [tenantId], references: [id])
+  vendorId    String
+  vendor      Vendor   @relation(fields: [vendorId], references: [id])
+  orderId     String?
+  order       Order?   @relation(fields: [orderId], references: [id])
+  type        String   // SALE, COMMISSION, PLATFORM_FEE, RENT, ADJUSTMENT, PAYOUT
+  amount      Float
+  balance     Float    @default(0)
+  description String?
+  createdAt   DateTime @default(now())
+}
+
+model VendorPayout {
+  id        String    @id @default(cuid())
+  tenantId  String
+  tenant    Tenant    @relation(fields: [tenantId], references: [id])
+  vendorId  String
+  vendor    Vendor    @relation(fields: [vendorId], references: [id])
+  amount    Float
+  period    String    // e.g., "2026-02" or "2026-W07"
+  status    String    @default("PENDING") // PENDING, PAID
+  paidAt    DateTime?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+}
+
+// ==================== Inventory ====================
 
 model Ingredient {
-  id          String           @id @default(cuid())
-  name        String
-  unit        String
-  stock       Float            @default(0)
-  minStock    Float            @default(0)
-  costPerUnit Float            @default(0)
-  items       ItemIngredient[]
-  purchases   Purchase[]
-  createdAt   DateTime         @default(now())
-  updatedAt   DateTime         @updatedAt
+  id            String           @id @default(cuid())
+  tenantId      String?
+  tenant        Tenant?          @relation(fields: [tenantId], references: [id])
+  vendorId      String?
+  vendor        Vendor?          @relation(fields: [vendorId], references: [id])
+  name          String
+  unit          String
+  stock         Float            @default(0)
+  minStock      Float            @default(0)
+  costPerUnit   Float            @default(0)
+  items         ItemIngredient[]
+  purchases     Purchase[]
+  inventoryLogs InventoryLog[]
+  wastes        Waste[]
+  createdAt     DateTime         @default(now())
+  updatedAt     DateTime         @updatedAt
 }
 
 model ItemIngredient {
@@ -209,6 +405,9 @@ model ItemIngredient {
 
 model Purchase {
   id           String     @id @default(cuid())
+  tenantId     String?
+  branchId     String?
+  branch       Branch?    @relation(fields: [branchId], references: [id])
   ingredientId String
   ingredient   Ingredient @relation(fields: [ingredientId], references: [id])
   quantity     Float
@@ -216,4 +415,249 @@ model Purchase {
   supplier     String?
   note         String?
   createdAt    DateTime   @default(now())
+}
+
+// ==================== Inventory Logs & Waste ====================
+
+model InventoryLog {
+  id            String     @id @default(cuid())
+  tenantId      String?
+  tenant        Tenant?    @relation(fields: [tenantId], references: [id])
+  ingredientId  String
+  ingredient    Ingredient @relation(fields: [ingredientId], references: [id])
+  type          String
+  quantity      Float
+  previousStock Float
+  newStock      Float
+  reason        String?
+  referenceId   String?
+  staffId       String?
+  staff         Staff?     @relation(fields: [staffId], references: [id])
+  createdAt     DateTime   @default(now())
+}
+
+model Waste {
+  id           String     @id @default(cuid())
+  tenantId     String?
+  tenant       Tenant?    @relation(fields: [tenantId], references: [id])
+  branchId     String?
+  branch       Branch?    @relation(fields: [branchId], references: [id])
+  ingredientId String
+  ingredient   Ingredient @relation(fields: [ingredientId], references: [id])
+  quantity     Float
+  reason       String
+  staffId      String?
+  staff        Staff?     @relation(fields: [staffId], references: [id])
+  createdAt    DateTime   @default(now())
+}
+
+// ==================== Expenses ====================
+
+model Expense {
+  id        String   @id @default(cuid())
+  tenantId  String?
+  tenant    Tenant?  @relation(fields: [tenantId], references: [id])
+  branchId  String?
+  branch    Branch?  @relation(fields: [branchId], references: [id])
+  category  String
+  amount    Float
+  date      DateTime
+  notes     String?
+  staffId   String?
+  staff     Staff?   @relation(fields: [staffId], references: [id])
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+// ==================== Kitchen & Fulfillment ====================
+
+model VendorCapacityRule {
+  id                String   @id @default(cuid())
+  vendorId          String
+  vendor            Vendor   @relation(fields: [vendorId], references: [id])
+  maxOrdersPerWindow Int     @default(20)
+  windowMinutes     Int      @default(30)
+  maxActiveTickets  Int      @default(10)
+  active            Boolean  @default(true)
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+}
+
+model OrderThrottleLog {
+  id        String   @id @default(cuid())
+  vendorId  String
+  vendor    Vendor   @relation(fields: [vendorId], references: [id])
+  action    String   // THROTTLED, PAUSED, RESUMED
+  reason    String?
+  createdAt DateTime @default(now())
+}
+
+// ==================== Analytics Summaries ====================
+
+model DailySalesSummary {
+  id                 String   @id @default(cuid())
+  tenantId           String
+  branchId           String
+  vendorId           String?
+  date               String   // YYYY-MM-DD
+  totalOrders        Int      @default(0)
+  completedOrders    Int      @default(0)
+  cancelledOrders    Int      @default(0)
+  totalRevenue       Float    @default(0)
+  totalTax           Float    @default(0)
+  totalDiscount      Float    @default(0)
+  totalCOGS          Float    @default(0)
+  totalExpenses      Float    @default(0)
+  netProfit          Float    @default(0)
+  avgOrderValue      Float    @default(0)
+  topItemsJson       String?  // JSON string of top 20 items
+  paymentMethodsJson String?  // JSON string of payment method breakdown
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  @@unique([tenantId, branchId, date])
+}
+
+model HourlySalesSummary {
+  id            String   @id @default(cuid())
+  tenantId      String
+  branchId      String
+  vendorId      String?
+  date          String   // YYYY-MM-DD
+  hour          Int      // 0-23
+  totalOrders   Int      @default(0)
+  totalRevenue  Float    @default(0)
+  avgOrderValue Float    @default(0)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@unique([tenantId, branchId, date, hour])
+}
+
+model InventorySummary {
+  id              String   @id @default(cuid())
+  tenantId        String
+  branchId        String
+  date            String   // YYYY-MM-DD
+  ingredientId    String
+  ingredientName  String
+  unit            String
+  openingStock    Float    @default(0)
+  closingStock    Float    @default(0)
+  totalConsumed   Float    @default(0)
+  totalPurchased  Float    @default(0)
+  totalWasted     Float    @default(0)
+  avgDailyUsage   Float    @default(0)
+  costPerUnit     Float    @default(0)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@unique([tenantId, branchId, date, ingredientId])
+}
+
+model AggregationJob {
+  id          String    @id @default(cuid())
+  tenantId    String
+  branchId    String
+  type        String    // "full", "daily-sales", "hourly-sales", "inventory"
+  dateFrom    String
+  dateTo      String
+  status      String    @default("PENDING") // PENDING, RUNNING, COMPLETED, FAILED
+  error       String?
+  triggeredBy String?
+  startedAt   DateTime?
+  completedAt DateTime?
+  createdAt   DateTime  @default(now())
+}
+
+// ==================== AI Insights ====================
+
+model AIInsight {
+  id          String   @id @default(cuid())
+  tenantId    String
+  type        String   // daily_summary, weekly_summary, anomaly, suggestion
+  period      String   // e.g., "2026-02-17", "2026-W07"
+  title       String
+  summary     String
+  content     String   // detailed markdown content
+  data        String?  // JSON data backing the insight
+  generatedAt DateTime @default(now())
+}
+
+// ==================== SaaS Billing ====================
+
+model Subscription {
+  id               String    @id @default(cuid())
+  tenantId         String
+  tenant           Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  plan             String
+  status           String    @default("TRIAL") // TRIAL, ACTIVE, PAST_DUE, CANCELED
+  trialEndsAt      DateTime?
+  currentPeriodEnd DateTime?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+}
+
+model Invoice {
+  id         String   @id @default(cuid())
+  tenantId   String
+  tenant     Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  amount     Float
+  status     String   @default("PENDING") // PENDING, PAID, OVERDUE
+  dueDate    DateTime
+  paidAt     DateTime?
+  note       String?
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+}
+
+model PlanConfig {
+  id          String   @id @default(cuid())
+  name        String   @unique
+  maxBranches Int      @default(1)
+  maxVendors  Int      @default(1)
+  aiEnabled   Boolean  @default(false)
+  price       Float    @default(0)
+  active      Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+// ==================== Tabs (Smart Tab Flow) ====================
+
+model Tab {
+  id          String    @id @default(cuid())
+  tenantId    String
+  branchId    String?
+  tableId     String?
+  guestName   String?
+  cardToken   String?   // encrypted reference
+  status      String    @default("OPEN") // OPEN, CLOSED
+  autoCloseAt DateTime?
+  totalSpent  Float     @default(0)
+  orders      TabOrder[]
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+}
+
+model TabOrder {
+  id      String @id @default(cuid())
+  tabId   String
+  tab     Tab    @relation(fields: [tabId], references: [id], onDelete: Cascade)
+  orderId String
+}
+
+// ==================== Audit ====================
+
+model AuditLog {
+  id        String   @id @default(cuid())
+  tenantId  String?
+  tenant    Tenant?  @relation(fields: [tenantId], references: [id])
+  staffId   String?
+  staff     Staff?   @relation(fields: [staffId], references: [id])
+  action    String
+  entity    String
+  entityId  String?
+  details   String?
+  createdAt DateTime @default(now())
 }

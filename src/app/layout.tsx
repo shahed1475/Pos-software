@@ -9,6 +9,7 @@ const inter = Inter({ subsets: ["latin"] })
 export const metadata: Metadata = {
   title: "FluxPOS - Restaurant POS System",
   description: "AI-powered restaurant point of sale system",
+  manifest: "/manifest.webmanifest",
 }
 
 export default function RootLayout({

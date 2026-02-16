@@ -1,10 +1,22 @@
 import { NextRequest, NextResponse } from "next/server"
 import { prisma } from "@/lib/prisma"
 import bcrypt from "bcryptjs"
+import { getAuthSession, unauthorizedResponse, forbiddenResponse } from "@/lib/auth-utils"
+import { requirePermission } from "@/lib/permissions"
+import { createStaffSchema, updateStaffSchema, formatZodError } from "@/lib/validations"
+import { ZodError } from "zod"
 
 export async function GET() {
   try {
+    const session = await getAuthSession()
+    if (!session) return unauthorizedResponse()
+    if (!requirePermission(session.role, "staff:read")) return forbiddenResponse()
+
+    const where: any = {}
+    if (session.tenantId) where.tenantId = session.tenantId
+
     const staff = await prisma.staff.findMany({
+      where,
       orderBy: { name: "asc" },
       select: {
         id: true,
@@ -25,26 +37,25 @@ export async function GET() {
 
 export async function POST(request: NextRequest) {
   try {
+    const session = await getAuthSession()
+    if (!session) return unauthorizedResponse()
+    if (!requirePermission(session.role, "staff:manage")) return forbiddenResponse()
+
     const body = await request.json()
+    const validated = createStaffSchema.parse(body)
 
-    if (!body.name || !body.pin) {
-      return NextResponse.json({ error: "Name and PIN required" }, { status: 400 })
-    }
-
-    if (body.pin.length < 4 || body.pin.length > 6) {
-      return NextResponse.json({ error: "PIN must be 4-6 digits" }, { status: 400 })
-    }
-
-    const hashedPin = await bcrypt.hash(body.pin, 10)
+    const hashedPin = await bcrypt.hash(validated.pin, 10)
 
     const staff = await prisma.staff.create({
       data: {
-        name: body.name,
+        name: validated.name,
         pin: hashedPin,
-        role: body.role || "CASHIER",
-        phone: body.phone,
-        email: body.email,
-        active: body.active ?? true,
+        role: validated.role,
+        phone: validated.phone,
+        email: validated.email,
+        active: validated.active,
+        ...(session.tenantId && { tenantId: session.tenantId }),
+        ...(session.branchId && { branchId: session.branchId }),
       },
     })
 
@@ -57,26 +68,34 @@ export async function POST(request: NextRequest) {
       active: staff.active,
     }, { status: 201 })
   } catch (error) {
+    if (error instanceof ZodError) {
+      return NextResponse.json({ error: "Validation failed", details: formatZodError(error) }, { status: 400 })
+    }
     return NextResponse.json({ error: "Failed to create staff" }, { status: 500 })
   }
 }
 
 export async function PUT(request: NextRequest) {
   try {
-    const body = await request.json()
-    const updateData: any = {}
+    const session = await getAuthSession()
+    if (!session) return unauthorizedResponse()
+    if (!requirePermission(session.role, "staff:manage")) return forbiddenResponse()
 
-    if (body.name) updateData.name = body.name
-    if (body.role) updateData.role = body.role
-    if (body.phone !== undefined) updateData.phone = body.phone
-    if (body.email !== undefined) updateData.email = body.email
-    if (body.active !== undefined) updateData.active = body.active
-    if (body.pin) {
-      updateData.pin = await bcrypt.hash(body.pin, 10)
+    const body = await request.json()
+    const validated = updateStaffSchema.parse(body)
+
+    const updateData: any = {}
+    if (validated.name) updateData.name = validated.name
+    if (validated.role) updateData.role = validated.role
+    if (validated.phone !== undefined) updateData.phone = validated.phone
+    if (validated.email !== undefined) updateData.email = validated.email
+    if (validated.active !== undefined) updateData.active = validated.active
+    if (validated.pin) {
+      updateData.pin = await bcrypt.hash(validated.pin, 10)
     }
 
     const staff = await prisma.staff.update({
-      where: { id: body.id },
+      where: { id: validated.id },
       data: updateData,
       select: {
         id: true,
@@ -90,17 +109,23 @@ export async function PUT(request: NextRequest) {
 
     return NextResponse.json(staff)
   } catch (error) {
+    if (error instanceof ZodError) {
+      return NextResponse.json({ error: "Validation failed", details: formatZodError(error) }, { status: 400 })
+    }
     return NextResponse.json({ error: "Failed to update staff" }, { status: 500 })
   }
 }
 
 export async function DELETE(request: NextRequest) {
   try {
+    const session = await getAuthSession()
+    if (!session) return unauthorizedResponse()
+    if (!requirePermission(session.role, "staff:manage")) return forbiddenResponse()
+
     const { searchParams } = new URL(request.url)
     const id = searchParams.get("id")
     if (!id) return NextResponse.json({ error: "ID required" }, { status: 400 })
 
-    // Soft delete by deactivating
     await prisma.staff.update({
       where: { id },
       data: { active: false },

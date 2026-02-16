@@ -1,27 +1,30 @@
 import { NextRequest, NextResponse } from "next/server"
 import { prisma } from "@/lib/prisma"
+import { getAuthSession, unauthorizedResponse, forbiddenResponse } from "@/lib/auth-utils"
+import { requirePermission } from "@/lib/permissions"
+import { createIngredientSchema, purchaseSchema, updateIngredientSchema, formatZodError } from "@/lib/validations"
+import { ZodError } from "zod"
 
 export async function GET(request: NextRequest) {
   try {
+    const session = await getAuthSession()
+    if (!session) return unauthorizedResponse()
+    if (!requirePermission(session.role, "inventory:read")) return forbiddenResponse()
+
     const { searchParams } = new URL(request.url)
     const lowStock = searchParams.get("lowStock")
 
-    let where: any = {}
-    if (lowStock === "true") {
-      // Get ingredients where stock <= minStock
-      where = {
-        stock: { lte: prisma.ingredient.fields.minStock },
-      }
-    }
+    const where: any = {}
+    if (session.tenantId) where.tenantId = session.tenantId
 
     const ingredients = await prisma.ingredient.findMany({
+      where,
       orderBy: { name: "asc" },
       include: {
         _count: { select: { items: true } },
       },
     })
 
-    // Filter low stock manually since Prisma doesn't support field comparison easily
     const result = lowStock === "true"
       ? ingredients.filter((i) => i.stock <= i.minStock)
       : ingredients
@@ -34,70 +37,94 @@ export async function GET(request: NextRequest) {
 
 export async function POST(request: NextRequest) {
   try {
+    const session = await getAuthSession()
+    if (!session) return unauthorizedResponse()
+    if (!requirePermission(session.role, "inventory:manage")) return forbiddenResponse()
+
     const body = await request.json()
 
     if (body.type === "purchase") {
-      // Record a purchase and update stock
+      const validated = purchaseSchema.parse(body)
       const purchase = await prisma.purchase.create({
         data: {
-          ingredientId: body.ingredientId,
-          quantity: parseFloat(body.quantity),
-          totalCost: parseFloat(body.totalCost),
-          supplier: body.supplier,
-          note: body.note,
+          ingredientId: validated.ingredientId,
+          quantity: validated.quantity,
+          totalCost: validated.totalCost,
+          supplier: validated.supplier,
+          note: validated.note,
+          ...(session.tenantId && { tenantId: session.tenantId }),
+          ...(session.branchId && { branchId: session.branchId }),
         },
       })
 
       await prisma.ingredient.update({
-        where: { id: body.ingredientId },
+        where: { id: validated.ingredientId },
         data: {
-          stock: { increment: parseFloat(body.quantity) },
+          stock: { increment: validated.quantity },
         },
       })
 
       return NextResponse.json(purchase, { status: 201 })
     }
 
-    // Create new ingredient
+    const validated = createIngredientSchema.parse(body)
     const ingredient = await prisma.ingredient.create({
       data: {
-        name: body.name,
-        unit: body.unit,
-        stock: parseFloat(body.stock) || 0,
-        minStock: parseFloat(body.minStock) || 0,
-        costPerUnit: parseFloat(body.costPerUnit) || 0,
+        name: validated.name,
+        unit: validated.unit,
+        stock: validated.stock || 0,
+        minStock: validated.minStock || 0,
+        costPerUnit: validated.costPerUnit || 0,
+        ...(session.tenantId && { tenantId: session.tenantId }),
       },
     })
     return NextResponse.json(ingredient, { status: 201 })
   } catch (error) {
+    if (error instanceof ZodError) {
+      return NextResponse.json({ error: "Validation failed", details: formatZodError(error) }, { status: 400 })
+    }
     return NextResponse.json({ error: "Failed to create" }, { status: 500 })
   }
 }
 
 export async function PUT(request: NextRequest) {
   try {
+    const session = await getAuthSession()
+    if (!session) return unauthorizedResponse()
+    if (!requirePermission(session.role, "inventory:manage")) return forbiddenResponse()
+
     const body = await request.json()
+    const validated = updateIngredientSchema.parse(body)
+
     const ingredient = await prisma.ingredient.update({
-      where: { id: body.id },
+      where: { id: validated.id },
       data: {
-        name: body.name,
-        unit: body.unit,
-        stock: body.stock !== undefined ? parseFloat(body.stock) : undefined,
-        minStock: body.minStock !== undefined ? parseFloat(body.minStock) : undefined,
-        costPerUnit: body.costPerUnit !== undefined ? parseFloat(body.costPerUnit) : undefined,
+        name: validated.name,
+        unit: validated.unit,
+        stock: validated.stock,
+        minStock: validated.minStock,
+        costPerUnit: validated.costPerUnit,
       },
     })
     return NextResponse.json(ingredient)
   } catch (error) {
+    if (error instanceof ZodError) {
+      return NextResponse.json({ error: "Validation failed", details: formatZodError(error) }, { status: 400 })
+    }
     return NextResponse.json({ error: "Failed to update" }, { status: 500 })
   }
 }
 
 export async function DELETE(request: NextRequest) {
   try {
+    const session = await getAuthSession()
+    if (!session) return unauthorizedResponse()
+    if (!requirePermission(session.role, "inventory:manage")) return forbiddenResponse()
+
     const { searchParams } = new URL(request.url)
     const id = searchParams.get("id")
     if (!id) return NextResponse.json({ error: "ID required" }, { status: 400 })
+
     await prisma.ingredient.delete({ where: { id } })
     return NextResponse.json({ success: true })
   } catch (error) {

@@ -1,13 +1,24 @@
 import { NextRequest, NextResponse } from "next/server"
 import { prisma } from "@/lib/prisma"
+import { getAuthSession, unauthorizedResponse, forbiddenResponse } from "@/lib/auth-utils"
+import { requirePermission } from "@/lib/permissions"
+import { updateOrderSchema, formatZodError } from "@/lib/validations"
+import { ZodError } from "zod"
 
 export async function GET(
   request: NextRequest,
   { params }: { params: { id: string } }
 ) {
   try {
-    const order = await prisma.order.findUnique({
-      where: { id: params.id },
+    const session = await getAuthSession()
+    if (!session) return unauthorizedResponse()
+    if (!requirePermission(session.role, "orders:read")) return forbiddenResponse()
+
+    const where: any = { id: params.id }
+    if (session.tenantId) where.tenantId = session.tenantId
+
+    const order = await prisma.order.findFirst({
+      where,
       include: {
         items: { include: { menuItem: true } },
         table: true,
@@ -27,19 +38,37 @@ export async function PUT(
   { params }: { params: { id: string } }
 ) {
   try {
-    const body = await request.json()
-    const updateData: any = {}
+    const session = await getAuthSession()
+    if (!session) return unauthorizedResponse()
+    if (!requirePermission(session.role, "orders:update")) return forbiddenResponse()
 
-    if (body.status) {
-      updateData.status = body.status
-      if (body.status === "COMPLETED") {
+    const body = await request.json()
+    const validated = updateOrderSchema.parse(body)
+
+    if (validated.status === "CANCELLED" && !requirePermission(session.role, "orders:cancel")) {
+      return forbiddenResponse()
+    }
+
+    // Verify order belongs to tenant
+    const existingOrder = await prisma.order.findFirst({
+      where: {
+        id: params.id,
+        ...(session.tenantId && { tenantId: session.tenantId }),
+      },
+    })
+    if (!existingOrder) return NextResponse.json({ error: "Not found" }, { status: 404 })
+
+    const updateData: any = {}
+    if (validated.status) {
+      updateData.status = validated.status
+      if (validated.status === "COMPLETED") {
         updateData.completedAt = new Date()
       }
     }
-    if (body.notes !== undefined) updateData.notes = body.notes
-    if (body.customerName !== undefined) updateData.customerName = body.customerName
-    if (body.customerPhone !== undefined) updateData.customerPhone = body.customerPhone
-    if (body.customerAddr !== undefined) updateData.customerAddr = body.customerAddr
+    if (validated.notes !== undefined) updateData.notes = validated.notes
+    if (validated.customerName !== undefined) updateData.customerName = validated.customerName
+    if (validated.customerPhone !== undefined) updateData.customerPhone = validated.customerPhone
+    if (validated.customerAddr !== undefined) updateData.customerAddr = validated.customerAddr
 
     const order = await prisma.order.update({
       where: { id: params.id },
@@ -53,8 +82,7 @@ export async function PUT(
     })
 
     // If order is completed or cancelled, free up the table
-    if ((body.status === "COMPLETED" || body.status === "CANCELLED") && order.tableId) {
-      // Check if there are other active orders on this table
+    if ((validated.status === "COMPLETED" || validated.status === "CANCELLED") && order.tableId) {
       const otherActiveOrders = await prisma.order.count({
         where: {
           tableId: order.tableId,
@@ -71,7 +99,7 @@ export async function PUT(
     }
 
     // Auto-deduct inventory when order status changes to PREPARING
-    if (body.status === "PREPARING") {
+    if (validated.status === "PREPARING") {
       const orderWithItems = await prisma.order.findUnique({
         where: { id: params.id },
         include: {
@@ -101,8 +129,42 @@ export async function PUT(
       }
     }
 
+    // Rollback inventory on cancellation if order was PREPARING or beyond
+    if (validated.status === "CANCELLED" && ["PREPARING", "READY", "SERVED"].includes(existingOrder.status)) {
+      const orderWithItems = await prisma.order.findUnique({
+        where: { id: params.id },
+        include: {
+          items: {
+            include: {
+              menuItem: {
+                include: {
+                  ingredients: { include: { ingredient: true } },
+                },
+              },
+            },
+          },
+        },
+      })
+
+      if (orderWithItems) {
+        for (const item of orderWithItems.items) {
+          for (const ing of item.menuItem.ingredients) {
+            await prisma.ingredient.update({
+              where: { id: ing.ingredientId },
+              data: {
+                stock: { increment: ing.quantity * item.quantity },
+              },
+            })
+          }
+        }
+      }
+    }
+
     return NextResponse.json(order)
   } catch (error) {
+    if (error instanceof ZodError) {
+      return NextResponse.json({ error: "Validation failed", details: formatZodError(error) }, { status: 400 })
+    }
     console.error("Order update error:", error)
     return NextResponse.json({ error: "Failed to update order" }, { status: 500 })
   }
@@ -113,10 +175,18 @@ export async function DELETE(
   { params }: { params: { id: string } }
 ) {
   try {
-    const order = await prisma.order.findUnique({
-      where: { id: params.id },
+    const session = await getAuthSession()
+    if (!session) return unauthorizedResponse()
+    if (!requirePermission(session.role, "orders:cancel")) return forbiddenResponse()
+
+    const order = await prisma.order.findFirst({
+      where: {
+        id: params.id,
+        ...(session.tenantId && { tenantId: session.tenantId }),
+      },
       select: { tableId: true },
     })
+    if (!order) return NextResponse.json({ error: "Not found" }, { status: 404 })
 
     await prisma.order.delete({ where: { id: params.id } })
 

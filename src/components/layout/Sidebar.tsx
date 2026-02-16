@@ -3,6 +3,7 @@
 import Link from "next/link"
 import Image from "next/image"
 import { usePathname } from "next/navigation"
+import { useState } from "react"
 import { cn } from "@/lib/utils"
 import {
   LayoutDashboard,
@@ -16,7 +17,7 @@ import {
   Settings,
   LogOut,
 } from "lucide-react"
-import { signOut } from "next-auth/react"
+import { signOut, useSession } from "next-auth/react"
 
 const navigation = [
   { name: "Dashboard", href: "/dashboard", icon: LayoutDashboard },
@@ -33,6 +34,25 @@ const navigation = [
 
 export function Sidebar() {
   const pathname = usePathname()
+  const { data: session } = useSession()
+  const [signingOut, setSigningOut] = useState(false)
+
+  const items = [
+    ...navigation,
+    ...(session?.user?.role === "SUPER_ADMIN"
+      ? [{ name: "Admin", href: "/dashboard/admin", icon: Settings }]
+      : []),
+  ]
+
+  async function handleSignOut() {
+    if (signingOut) return
+    setSigningOut(true)
+    try {
+      await signOut({ redirect: false })
+    } finally {
+      window.location.href = "/"
+    }
+  }
 
   return (
     <div className="flex h-full w-64 flex-col border-r bg-card">
@@ -49,7 +69,7 @@ export function Sidebar() {
         </Link>
       </div>
       <nav className="flex-1 space-y-1 p-4 overflow-y-auto">
-        {navigation.map((item) => {
+        {items.map((item) => {
           const isActive = pathname === item.href ||
             (item.href !== "/dashboard" && pathname.startsWith(item.href))
           return (
@@ -71,11 +91,12 @@ export function Sidebar() {
       </nav>
       <div className="border-t p-4">
         <button
-          onClick={() => signOut({ callbackUrl: "/" })}
+          onClick={handleSignOut}
+          disabled={signingOut}
           className="flex w-full items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
         >
           <LogOut className="h-5 w-5" />
-          Sign Out
+          {signingOut ? "Signing Out..." : "Sign Out"}
         </button>
       </div>
     </div>

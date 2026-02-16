@@ -1,26 +1,30 @@
 import { NextRequest, NextResponse } from "next/server"
 import { prisma } from "@/lib/prisma"
+import { getAuthSession, unauthorizedResponse, forbiddenResponse } from "@/lib/auth-utils"
+import { requirePermission } from "@/lib/permissions"
+import { createPaymentSchema, formatZodError } from "@/lib/validations"
+import { ZodError } from "zod"
 
 export async function POST(request: NextRequest) {
   try {
-    const body = await request.json()
-    const { orderId, method, amount } = body
+    const session = await getAuthSession()
+    if (!session) return unauthorizedResponse()
+    if (!requirePermission(session.role, "billing:create")) return forbiddenResponse()
 
-    if (!orderId || !method || amount === undefined) {
-      return NextResponse.json({ error: "orderId, method, and amount are required" }, { status: 400 })
-    }
+    const body = await request.json()
+    const validated = createPaymentSchema.parse(body)
 
     const payment = await prisma.payment.create({
       data: {
-        orderId,
-        method,
-        amount: parseFloat(amount),
+        orderId: validated.orderId,
+        method: validated.method,
+        amount: validated.amount,
       },
     })
 
     // Check if full payment received
     const order = await prisma.order.findUnique({
-      where: { id: orderId },
+      where: { id: validated.orderId },
       include: { payments: true },
     })
 
@@ -28,7 +32,7 @@ export async function POST(request: NextRequest) {
       const totalPaid = order.payments.reduce((sum, p) => sum + p.amount, 0)
       if (totalPaid >= order.total) {
         await prisma.order.update({
-          where: { id: orderId },
+          where: { id: validated.orderId },
           data: { status: "COMPLETED", completedAt: new Date() },
         })
 
@@ -37,7 +41,7 @@ export async function POST(request: NextRequest) {
           const otherActive = await prisma.order.count({
             where: {
               tableId: order.tableId,
-              id: { not: orderId },
+              id: { not: validated.orderId },
               status: { in: ["NEW", "PREPARING", "READY", "SERVED"] },
             },
           })
@@ -53,6 +57,9 @@ export async function POST(request: NextRequest) {
 
     return NextResponse.json(payment, { status: 201 })
   } catch (error) {
+    if (error instanceof ZodError) {
+      return NextResponse.json({ error: "Validation failed", details: formatZodError(error) }, { status: 400 })
+    }
     console.error("Payment error:", error)
     return NextResponse.json({ error: "Failed to process payment" }, { status: 500 })
   }
@@ -60,6 +67,10 @@ export async function POST(request: NextRequest) {
 
 export async function GET(request: NextRequest) {
   try {
+    const session = await getAuthSession()
+    if (!session) return unauthorizedResponse()
+    if (!requirePermission(session.role, "billing:read")) return forbiddenResponse()
+
     const { searchParams } = new URL(request.url)
     const orderId = searchParams.get("orderId")
 

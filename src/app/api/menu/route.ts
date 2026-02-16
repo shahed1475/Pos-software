@@ -1,13 +1,22 @@
 import { NextRequest, NextResponse } from "next/server"
 import { prisma } from "@/lib/prisma"
+import { getAuthSession, unauthorizedResponse, forbiddenResponse } from "@/lib/auth-utils"
+import { requirePermission } from "@/lib/permissions"
+import { createMenuItemSchema, formatZodError } from "@/lib/validations"
+import { ZodError } from "zod"
 
 export async function GET(request: NextRequest) {
   try {
+    const session = await getAuthSession()
+    if (!session) return unauthorizedResponse()
+    if (!requirePermission(session.role, "menu:read")) return forbiddenResponse()
+
     const { searchParams } = new URL(request.url)
     const categoryId = searchParams.get("categoryId")
     const available = searchParams.get("available")
 
     const where: any = {}
+    if (session.tenantId) where.tenantId = session.tenantId
     if (categoryId) where.categoryId = categoryId
     if (available === "true") where.available = true
 
@@ -27,20 +36,27 @@ export async function GET(request: NextRequest) {
 
 export async function POST(request: NextRequest) {
   try {
+    const session = await getAuthSession()
+    if (!session) return unauthorizedResponse()
+    if (!requirePermission(session.role, "menu:create")) return forbiddenResponse()
+
     const body = await request.json()
+    const validated = createMenuItemSchema.parse(body)
+
     const item = await prisma.menuItem.create({
       data: {
-        name: body.name,
-        description: body.description,
-        price: parseFloat(body.price),
-        image: body.image,
-        categoryId: body.categoryId,
-        available: body.available ?? true,
-        variants: body.variants?.length
+        name: validated.name,
+        description: validated.description,
+        price: validated.price,
+        image: validated.image,
+        categoryId: validated.categoryId,
+        available: validated.available,
+        ...(session.tenantId && { tenantId: session.tenantId }),
+        variants: validated.variants?.length
           ? {
-              create: body.variants.map((v: any) => ({
+              create: validated.variants.map((v) => ({
                 name: v.name,
-                priceAdj: parseFloat(v.priceAdj) || 0,
+                priceAdj: v.priceAdj || 0,
               })),
             }
           : undefined,
@@ -49,6 +65,9 @@ export async function POST(request: NextRequest) {
     })
     return NextResponse.json(item, { status: 201 })
   } catch (error) {
+    if (error instanceof ZodError) {
+      return NextResponse.json({ error: "Validation failed", details: formatZodError(error) }, { status: 400 })
+    }
     return NextResponse.json({ error: "Failed to create menu item" }, { status: 500 })
   }
 }
